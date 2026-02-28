@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Smart Parking Dashboard</title>
+    <meta charset="UTF-8">
+
+    <!-- Bootstrap -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <style>
+        body {
+            background-color: #f4f6f9;
+            transition: 0.3s;
+        }
+        
+        .light-navbar {
+            background-color: #0d6efd !important;
+        }
+        
+        .dark-mode {
+            background-color: #121212 !important;
+            color: white !important;
+        }
+        
+        .dark-mode .card {
+            background-color: #1e1e1e !important;
+            color: white !important;
+        }
+        
+        .dark-mode .table {
+            color: white !important;
+        }
+        
+        .dark-mode .table-dark {
+            background-color: #000 !important;
+        }
+        
+        .dark-mode .navbar {
+            background-color: #000 !important;
+        }
+        
+        .card {
+            border-radius: 10px;
+        }
+    </style>
+
+    <script>
+        function toggleTheme() {
+            const body = document.body;
+            const navbar = document.getElementById("mainNavbar");
+            const btn = document.getElementById("themeBtn");
+
+            body.classList.toggle("dark-mode");
+
+            if (body.classList.contains("dark-mode")) {
+                navbar.classList.remove("light-navbar");
+                navbar.classList.add("bg-dark");
+                btn.innerHTML = "☀️";
+            } else {
+                navbar.classList.remove("bg-dark");
+                navbar.classList.add("light-navbar");
+                btn.innerHTML = "🌙";
+            }
+        }
+    </script>
+</head>
+
+<body>
+
+    <!-- ================= NAVBAR ================= -->
+    <nav id="mainNavbar" class="navbar navbar-dark light-navbar px-4 d-flex justify-content-between">
+
+        <span class="navbar-brand">🚗 Smart Parking</span>
+
+        <div class="d-flex align-items-center text-white">
+
+            <!-- ADMIN PROFILE (ADDED ONLY THIS) -->
+            <div class="me-4 text-end">
+                <div><strong>👤 {{ admin_name }}</strong></div>
+                <small>Login: {{ login_time }}</small><br> {% if logout_time %}
+                <small>Last Logout: {{ logout_time }}</small> {% endif %}
+            </div>
+
+            <div>
+                <a href="/add" class="btn btn-primary btn-sm me-2">+ Add Entry</a>
+                <a href="/export_excel" class="btn btn-success btn-sm me-2">Excel</a>
+                <a href="/export_pdf" class="btn btn-danger btn-sm me-2">PDF</a>
+                <button onclick="toggleTheme()" id="themeBtn" class="btn btn-secondary btn-sm me-2">🌙</button>
+                <a href="/logout" class="btn btn-warning btn-sm">Logout</a>
+            </div>
+
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+
+        <!-- ================= SUMMARY CARDS ================= -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card bg-primary text-white p-3 shadow">
+                    <h6>Total Revenue</h6>
+                    <h3>₹ {{ "%.3f"|format(total) }}</h3>
+                </div>
+            </div>
+
+            <div class="col-md-3">
+                <div class="card bg-success text-white p-3 shadow">
+                    <h6>Total Vehicles</h6>
+                    <h3>{{ data|length }}</h3>
+                </div>
+            </div>
+
+            <div class="col-md-3">
+                <div class="card bg-warning text-dark p-3 shadow">
+                    <h6>Active Vehicles</h6>
+                    <h3>{{ active_count }}</h3>
+                </div>
+            </div>
+
+            <div class="col-md-3">
+                <div class="card bg-dark text-white p-3 shadow">
+                    <h6>Total Slots</h6>
+                    <h3>{{ total_slots }}</h3>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= ANALYTICS CARDS ================= -->
+        <div class="row mb-4">
+            <div class="col-md-3">
+                <div class="card bg-info text-white p-3 shadow">
+                    <h6>Today's Revenue</h6>
+                    <h4>₹ {{ "%.2f"|format(today_revenue) }}</h4>
+                </div>
+            </div>
+
+            <div class="col-md-3">
+                <div class="card bg-success text-white p-3 shadow">
+                    <h6>This Month</h6>
+                    <h4>₹ {{ "%.2f"|format(month_revenue) }}</h4>
+                </div>
+            </div>
+
+            <div class="col-md-3">
+                <div class="card bg-primary text-white p-3 shadow">
+                    <h6>This Year</h6>
+                    <h4>₹ {{ "%.2f"|format(year_revenue) }}</h4>
+                </div>
+            </div>
+
+            <div class="col-md-3">
+                <div class="card bg-secondary text-white p-3 shadow">
+                    <h6>Avg Parking Fee</h6>
+                    <h4>₹ {{ "%.2f"|format(avg_fee) }}</h4>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= PARKING OCCUPANCY CARD ================= -->
+        <div class="card shadow mb-4 p-3">
+            <h6>Parking Occupancy</h6>
+            <div class="progress" style="height:25px;">
+                <div class="progress-bar bg-danger" style="width: {{ occupancy_percent }}%;">
+                    {{ occupancy_percent }}%
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= LIVE PARKING STATUS ================= -->
+        <div class="card shadow mb-4 p-3">
+            <h5>🚦 Live Parking Status Board</h5>
+
+            {% if parking_status %} {% for lot in parking_status %}
+            <div class="mb-3 p-3 border rounded">
+                <h6 class="fw-bold">Lot {{ lot.lot_name }}</h6>
+                Total: {{ lot.total }} |
+                <span class="text-danger fw-bold">Occupied: {{ lot.occupied }}</span> |
+                <span class="text-success fw-bold">Available: {{ lot.available }}</span>
+            </div>
+            {% endfor %} {% else %}
+            <p>No Parking Lots Found</p>
+            {% endif %}
+        </div>
+
+        <!-- ================= TABLE ================= -->
+        <div class="card shadow">
+            <div class="card-body table-responsive">
+                <table class="table table-bordered text-center">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>ID</th>
+                            <th>Lot</th>
+                            <th>Vehicle</th>
+                            <th>Entry</th>
+                            <th>Exit</th>
+                            <th>Fee</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in data %}
+                        <tr>
+                            <td>{{ row.id }}</td>
+                            <td>{{ row.parking_lot }}</td>
+                            <td>{{ row.vehicle_number }}</td>
+                            <td>{{ row.entry_time }}</td>
+                            <td>{{ row.exit_time }}</td>
+                            <td>₹ {{ row.parking_fee }}</td>
+                            <td>
+                                <a href="/edit/{{ row.id }}" class="btn btn-info btn-sm">Edit</a> {% if row.exit_time == None %}
+                                <a href="/exit/{{ row.id }}" class="btn btn-warning btn-sm ms-1">Exit</a> {% else %}
+                                <span class="badge bg-success">Completed</span> {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+
+                <!-- PAGINATION -->
+                <nav>
+                    <ul class="pagination justify-content-center mt-3">
+                        {% if page > 1 %}
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('dashboard', page=page-1, search=search, start_date=start_date, end_date=end_date) }}">
+                            Previous
+                        </a>
+                        </li>
+                        {% endif %} {% for p in range(1, total_pages + 1) %}
+                        <li class="page-item {% if p == page %}active{% endif %}">
+                            <a class="page-link" href="{{ url_for('dashboard', page=p, search=search, start_date=start_date, end_date=end_date) }}">
+                            {{ p }}
+                        </a>
+                        </li>
+                        {% endfor %} {% if page
+                        < total_pages %} <li class="page-item">
+                            <a class="page-link" href="{{ url_for('dashboard', page=page+1, search=search, start_date=start_date, end_date=end_date) }}">
+                            Next
+                        </a>
+                            </li>
+                            {% endif %}
+                    </ul>
+                </nav>
+
+            </div>
+        </div>
+
+    </div>
+</body>
+
+</html>
