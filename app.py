@@ -6,7 +6,11 @@ from datetime import datetime
 from reportlab.lib.pagesizes import letter  # pyright: ignore[reportMissingModuleSource]
 from reportlab.pdfgen import canvas  # pyright: ignore[reportMissingModuleSource]
 from twilio.rest import Client # pyright: ignore[reportMissingImports]
-
+import time
+import os
+import qrcode # type: ignore
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image # type: ignore
+from reportlab.lib.styles import getSampleStyleSheet # type: ignore
 app = Flask(__name__)
 app.secret_key = "supersecretkey123"
 
@@ -69,6 +73,7 @@ def dashboard():
 
     if "admin" not in session:
         return redirect("/")
+    is_full = False 
 
     search = request.args.get("search")
     start_date = request.args.get("start_date")
@@ -81,7 +86,8 @@ def dashboard():
     cursor = conn.cursor(dictionary=True)
 
     # ---------------- FILTER QUERY ----------------
-    query = "SELECT * FROM parking_data WHERE 1=1"
+    query = "SELECT * FROM parking_data_new" \
+    " WHERE 1=1"
     params = []
 
     if search:
@@ -109,31 +115,31 @@ def dashboard():
     data = cursor.fetchall()
 
     # ---------------- SUMMARY DATA ----------------
-    cursor.execute("SELECT COALESCE(SUM(parking_fee),0) AS total FROM parking_data")
+    cursor.execute("SELECT COALESCE(SUM(parking_fee),0) AS total FROM parking_data_new")
     total = round(float(cursor.fetchone()["total"]), 2)
 
-    cursor.execute("SELECT COUNT(*) AS active FROM parking_data WHERE exit_time IS NULL")
+    cursor.execute("SELECT COUNT(*) AS active FROM parking_data_new WHERE exit_time IS NULL")
     active_count = cursor.fetchone()["active"]
 
     cursor.execute("SELECT COALESCE(SUM(total_slots),0) AS total_slots FROM parking_lots")
     total_slots = cursor.fetchone()["total_slots"]
 
-    cursor.execute("SELECT COUNT(*) AS occupied FROM parking_data WHERE exit_time IS NULL")
+    cursor.execute("SELECT COUNT(*) AS occupied FROM parking_data_new WHERE exit_time IS NULL")
     occupied_slots = cursor.fetchone()["occupied"]
 
-    available_slots = total_slots - occupied_slots
+    available_slots = max(0, total_slots - occupied_slots)
 
     # ---------------- ANALYTICS ----------------
     cursor.execute("""
         SELECT COALESCE(SUM(parking_fee),0)
-        FROM parking_data
+        FROM parking_data_new
         WHERE DATE(entry_time) = CURDATE()
     """)
     today_revenue = float(cursor.fetchone()["COALESCE(SUM(parking_fee),0)"])
 
     cursor.execute("""
         SELECT COALESCE(SUM(parking_fee),0)
-        FROM parking_data
+        FROM parking_data_new
         WHERE MONTH(entry_time)=MONTH(CURDATE())
         AND YEAR(entry_time)=YEAR(CURDATE())
     """)
@@ -141,18 +147,22 @@ def dashboard():
 
     cursor.execute("""
         SELECT COALESCE(SUM(parking_fee),0)
-        FROM parking_data
+        FROM parking_data_new
         WHERE YEAR(entry_time)=YEAR(CURDATE())
     """)
     year_revenue = float(cursor.fetchone()["COALESCE(SUM(parking_fee),0)"])
 
-    cursor.execute("SELECT COALESCE(AVG(parking_fee),0) FROM parking_data")
+    cursor.execute("SELECT COALESCE(AVG(parking_fee),0) FROM parking_data_new")
     avg_fee = round(float(cursor.fetchone()["COALESCE(AVG(parking_fee),0)"]), 2)
 
     if total_slots > 0:
         occupancy_percent = round((occupied_slots / total_slots) * 100, 2)
     else:
         occupancy_percent = 0
+
+
+        # ---------------- CHECK IF PARKING FULL ----------------
+        is_full = occupied_slots >= total_slots
 
     # ---------------- LIVE PARKING STATUS PER LOT ----------------
     cursor.execute("SELECT lot_name, total_slots FROM parking_lots")
@@ -166,7 +176,7 @@ def dashboard():
 
         cursor.execute("""
             SELECT COUNT(*) AS occupied
-            FROM parking_data
+            FROM parking_data_new
             WHERE parking_lot = %s
             AND exit_time IS NULL
         """, (lot_name,))
@@ -180,6 +190,8 @@ def dashboard():
             "occupied": occupied,
             "available": available
         })
+
+        
 
     cursor.close()
     conn.close()
@@ -203,6 +215,7 @@ def dashboard():
         avg_fee=avg_fee,
         occupancy_percent=occupancy_percent,
         parking_status=parking_status,
+        is_full=is_full,
 
         # ===== ADMIN PROFILE DATA =====
         admin_name=session.get("admin_name"),
@@ -223,13 +236,43 @@ def add_entry():
         entry_time = datetime.now()
 
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
 
+        # 🔹 STEP 1: Get total slots of selected lot
+        cursor.execute(
+            "SELECT total_slots FROM parking_lots WHERE lot_name=%s",
+            (parking_lot,)
+        )
+        lot = cursor.fetchone()
+
+        if not lot:
+            cursor.close()
+            conn.close()
+            return "❌ Invalid Parking Lot"
+
+        total_slots = lot["total_slots"]
+
+        # 🔹 STEP 2: Count currently occupied slots
         cursor.execute("""
-            INSERT INTO parking_data 
-            (vehicle_number, parking_lot, entry_time, parking_fee)
-            VALUES (%s, %s, %s, %s)
-        """, (vehicle_number, parking_lot, entry_time, 0))
+            SELECT COUNT(*) AS occupied
+            FROM parking_data_new
+            WHERE parking_lot=%s AND exit_time IS NULL
+        """, (parking_lot,))
+
+        occupied = cursor.fetchone()["occupied"]
+
+        # 🔥 STEP 3: Check if lot is FULL
+        if occupied >= total_slots:
+            cursor.close()
+            conn.close()
+            return "🚫 This Parking Lot is FULL!"
+
+        # 🔹 STEP 4: Insert entry (only if not full)
+        cursor.execute("""
+            INSERT INTO parking_data_new
+            (vehicle_number, parking_lot, entry_time, parking_fee, payment_status)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (vehicle_number, parking_lot, entry_time, 0, "Pending"))
 
         conn.commit()
         cursor.close()
@@ -254,7 +297,7 @@ def edit_entry(id):
         parking_lot = request.form["parking_lot"]
 
         cursor.execute("""
-            UPDATE parking_data
+            UPDATE parking_data_new
             SET vehicle_number=%s,
                 parking_lot=%s
             WHERE id=%s
@@ -266,7 +309,7 @@ def edit_entry(id):
 
         return redirect("/dashboard")
 
-    cursor.execute("SELECT * FROM parking_data WHERE id=%s", (id,))
+    cursor.execute("SELECT * FROM parking_data_new WHERE id=%s", (id,))
     entry = cursor.fetchone()
 
     cursor.close()
@@ -274,17 +317,40 @@ def edit_entry(id):
 
     return render_template("edit.html", entry=entry)
 
-
-# ================= EXIT VEHICLE =================
-@app.route("/exit/<int:id>")
-def exit_vehicle(id):
+# ================= DELETE ENTRY =================
+@app.route("/delete/<int:id>")
+def delete_entry(id):
     if "admin" not in session:
         return redirect("/")
 
     conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM parking_data_new WHERE id=%s", (id,))
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+
+    return redirect("/dashboard")
+
+
+# ================= EXIT VEHICLE =================
+# ================= EXIT VEHICLE =================
+# ================= PROCESS PAYMENT =================
+@app.route("/process_payment/<int:id>", methods=["POST"])
+def process_payment(id):
+    if "admin" not in session:
+        return redirect("/")
+
+    payment_mode = request.form["payment_mode"]
+    transaction_id = "TXN" + str(int(time.time()))
+
+    conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
-    cursor.execute("SELECT entry_time FROM parking_data WHERE id=%s", (id,))
+    # Get entry time
+    cursor.execute("SELECT entry_time FROM parking_data_new WHERE id=%s", (id,))
     record = cursor.fetchone()
 
     if record and record["entry_time"]:
@@ -298,17 +364,20 @@ def exit_vehicle(id):
         fee = max(20, round(hours * rate_per_hour, 2))
 
         cursor.execute("""
-            UPDATE parking_data
-            SET exit_time=%s, parking_fee=%s
+            UPDATE parking_data_new
+            SET exit_time=%s,
+                parking_fee=%s,
+                payment_mode=%s,
+                payment_status='Paid',
+                transaction_id=%s
             WHERE id=%s
-        """, (exit_time, fee, id))
+        """, (exit_time, fee, payment_mode, transaction_id, id))
 
         conn.commit()
 
     cursor.close()
     conn.close()
-
-    return redirect("/dashboard")
+    return "success"
 
 
 # ================= EXPORT EXCEL =================
@@ -318,7 +387,7 @@ def export_excel():
         return redirect("/")
 
     conn = get_db_connection()
-    df = pd.read_sql("SELECT * FROM parking_data", conn)
+    df = pd.read_sql("SELECT * FROM parking_data_new", conn)
     conn.close()
 
     output = io.BytesIO()
@@ -327,7 +396,7 @@ def export_excel():
 
     return send_file(
         output,
-        download_name="parking_data.xlsx",
+        download_name="parking_data_new.xlsx",
         as_attachment=True
     )
 
@@ -340,7 +409,7 @@ def export_pdf():
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM parking_data")
+    cursor.execute("SELECT * FROM parking_data_new")
     rows = cursor.fetchall()
     conn.close()
 
@@ -370,6 +439,90 @@ def export_pdf():
         as_attachment=True
     )
 
+#GENERATE UPI QR CODE
+@app.route("/generate_upi_qr/<int:id>")
+def generate_upi_qr(id):
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute("SELECT * FROM parking_data_new WHERE id=%s", (id,))
+    record = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    if not record:
+        return "Record not found"
+
+    entry_time = record["entry_time"]
+    exit_time = datetime.now()
+
+    diff = exit_time - entry_time
+    hours = diff.total_seconds() / 3600
+    rate_per_hour = 20
+
+    amount = max(20, round(hours * rate_per_hour, 2))
+
+    # UPI Payment String
+    upi_id = "chiyanshiporwal@okaxis"   # 👈 yaha apna UPI ID daal sakti ho
+    name = "SmartParking"
+
+    upi_string = f"upi://pay?pa={upi_id}&pn={name}&am={amount}&cu=INR"
+
+    # Generate QR
+    qr = qrcode.make(upi_string)
+
+    qr_folder = "static/qr"
+    if not os.path.exists(qr_folder):
+        os.makedirs(qr_folder)
+
+    qr_path = f"{qr_folder}/qr_{id}.png"
+    qr.save(qr_path)
+
+    return qr_path
+
+# ================= GENERATE RECEIPT =================
+@app.route("/generate_receipt/<int:id>")
+def generate_receipt(id):
+    if "admin" not in session:
+        return redirect("/")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute("SELECT * FROM parking_data_new WHERE id=%s", (id,))
+    record = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    filename = f"receipt_{id}.pdf"
+    filepath = os.path.join("static", filename)
+
+    doc = SimpleDocTemplate(filepath)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    elements.append(Paragraph("SMART PARKING RECEIPT", styles['Title']))
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph(f"Vehicle: {record['vehicle_number']}", styles['Normal']))
+    elements.append(Paragraph(f"Lot: {record['parking_lot']}", styles['Normal']))
+    elements.append(Paragraph(f"Amount: ₹ {record['parking_fee']}", styles['Normal']))
+    elements.append(Paragraph(f"Payment Mode: {record['payment_mode']}", styles['Normal']))
+    elements.append(Paragraph(f"Transaction ID: {record['transaction_id']}", styles['Normal']))
+
+    qr = qrcode.make(record['transaction_id'])
+    qr_path = os.path.join("static", f"qr_{id}.png")
+    qr.save(qr_path)
+
+    elements.append(Spacer(1, 20))
+    elements.append(Image(qr_path, width=120, height=120))
+
+    doc.build(elements)
+
+    return redirect("/static/" + filename)
 
 # ================= LOGOUT =================
 @app.route("/logout")
@@ -385,4 +538,6 @@ def logout():
 # ================= RUN APP =================
 if __name__ == "__main__":
     app.run(debug=True)
+
+
 
